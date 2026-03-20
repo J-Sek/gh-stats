@@ -9,12 +9,11 @@
       style="width: 400px"
     />
 
-    <v-footer app height="48">
-      <span class="text-medium-emphasis mr-2">Y-axis</span>
+    <v-footer app class="d-flex justify-center" height="48">
+      <span class="text-medium-emphasis mr-3">Y-axis</span>
 
       <v-btn-toggle
         v-model="useGlobalMax"
-        class="mr-4"
         density="compact"
         mandatory
         variant="outlined"
@@ -23,7 +22,7 @@
         <v-btn :value="false">Local</v-btn>
       </v-btn-toggle>
 
-      <span class="text-medium-emphasis mr-2">Granularity</span>
+      <span class="text-medium-emphasis mr-3 ml-16">Granularity</span>
 
       <v-btn-toggle
         v-model="granularity"
@@ -33,6 +32,19 @@
       >
         <v-btn value="daily">Daily</v-btn>
         <v-btn value="weekly">Weekly</v-btn>
+      </v-btn-toggle>
+
+      <span class="text-medium-emphasis mr-3 ml-16">Metric</span>
+
+      <v-btn-toggle
+        v-model="metric"
+        density="compact"
+        mandatory
+        variant="outlined"
+      >
+        <v-btn value="count">Count</v-btn>
+        <v-btn value="added">Added</v-btn>
+        <v-btn value="closed">Closed</v-btn>
       </v-btn-toggle>
     </v-footer>
 
@@ -64,7 +76,7 @@
           style="width: 40px"
         >
           <small>{{ useGlobalMax ? globalMax : year.max }}</small>
-          <small v-for="tick in (useGlobalMax ? globalTicks : year.ticks)" :key="tick">{{ tick % 300 === 0 ? tick : '-' }}</small>
+          <small v-for="tick in (useGlobalMax ? globalTicks : year.ticks)" :key="tick">{{ tick % (metricBase * 3) === 0 ? tick : '-' }}</small>
           <small>0</small>
         </div>
       </div>
@@ -92,6 +104,7 @@
   const snackbars = ref<any[]>([])
   const useGlobalMax = ref(false)
   const granularity = ref<'daily' | 'weekly'>('daily')
+  const metric = ref<'count' | 'added' | 'closed'>('count')
   const seenLogs = new Set<string>()
 
   const START_DATE = '2016-12-14'
@@ -130,24 +143,35 @@
 
   const aggregatedEntries = computed(() => {
     if (granularity.value === 'daily') return openIssues.value
-    const byWeek = new Map<string, DayEntry>()
+    const byWeek = new Map<string, DayEntry[]>()
     for (const entry of openIssues.value) {
-      byWeek.set(weekKey(entry.date), entry)
+      const key = weekKey(entry.date)
+      if (!byWeek.has(key)) byWeek.set(key, [])
+      byWeek.get(key)!.push(entry)
     }
-    return [...byWeek.values()]
+    return [...byWeek.values()].map(days => ({
+      date: days.at(-1)!.date,
+      count: Math.round(days.reduce((s, d) => s + d.count, 0) / days.length),
+      added: days.reduce((s, d) => s + d.added, 0),
+      closed: days.reduce((s, d) => s + d.closed, 0),
+    }))
   })
 
+  const metricBase = computed(() => metric.value === 'count' ? 100 : 10)
+
   function makeTicks (max: number) {
+    const base = metricBase.value
     const ticks: number[] = []
-    for (let v = max - 100; v > 0; v -= 100) {
+    for (let v = max - base; v > 0; v -= base) {
       ticks.push(v)
     }
     return ticks
   }
 
   const globalMax = computed(() => {
-    if (aggregatedEntries.value.length === 0) return 100
-    return Math.ceil(Math.max(...aggregatedEntries.value.map(e => e.count)) / 100) * 100
+    const base = metricBase.value
+    if (aggregatedEntries.value.length === 0) return base
+    return Math.ceil(Math.max(...aggregatedEntries.value.map(e => e[metric.value])) / base) * base
   })
 
   const globalTicks = computed(() => makeTicks(globalMax.value))
@@ -161,12 +185,13 @@
     for (const entry of aggregatedEntries.value) {
       const year = adapter.getYear(adapter.date(entry.date)!)
       if (!grouped.has(year)) grouped.set(year, [])
-      grouped.get(year)!.push(entry.count)
+      grouped.get(year)!.push(entry[metric.value])
     }
+    const base = metricBase.value
     return Array.from(grouped.entries())
       .toSorted(([a]: [number, number[]], [b]: [number, number[]]) => a - b)
       .map(([y, counts]: [number, number[]]) => {
-        const max = Math.ceil(Math.max(...counts) / 100) * 100 || 100
+        const max = Math.ceil(Math.max(...counts) / base) * base || base
         return {
           isCurrent: y === currentYear,
           label: String(y),
