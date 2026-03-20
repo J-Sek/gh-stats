@@ -16,6 +16,12 @@
 			"script": "dev",
 			"problemMatcher": [],
 			"label": "npm: dev"
+		},
+		{
+			"type": "npm",
+			"script": "lint:fix",
+			"problemMatcher": [],
+			"label": "npm: lint:fix"
 		}
 	]
 }

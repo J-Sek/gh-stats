@@ -1,6 +1,6 @@
-import UnoCSS from 'unocss/vite'
 import { fileURLToPath, URL } from 'node:url'
 import Vue from '@vitejs/plugin-vue'
+import UnoCSS from 'unocss/vite'
 import Fonts from 'unplugin-fonts/vite'
 import { defineConfig } from 'vite'
 import Vuetify, { transformAssetUrls } from 'vite-plugin-vuetify'
@@ -20,11 +20,7 @@ export default defineConfig({
     fontsource: {
       families: [
         {
-          name: 'Roboto Mono',
-          weights: [400, 700],
-        },
-        {
-          name: 'Roboto',
+          name: 'Kanit',
           weights: [100, 300, 400, 500, 700, 900],
           styles: ['normal', 'italic'],
         },

@@ -1,19 +1,19 @@
-import { defineConfig, transformerDirectives } from 'unocss'
 import presetIcons from '@unocss/preset-icons'
+import { defineConfig, transformerDirectives } from 'unocss'
 import { presetVuetify } from 'unocss-preset-vuetify'
 
 export default defineConfig({
   presets: [
     presetIcons({
-      processor(props) {
+      processor (props) {
         delete props.color
       },
     }),
     presetVuetify({
       font: {
-        heading: 'Roboto, sans-serif',
-        body: 'Roboto, sans-serif',
-        mono: '"Roboto Mono", sans-serif',
+        heading: 'Kanit, sans-serif',
+        body: 'Kanit, sans-serif',
+        mono: 'monospace',
       },
       typography: 'md3',
       elevation: 'md3',
@@ -27,6 +27,6 @@ export default defineConfig({
     ...['', '-0', '-sm', '-lg', '-xl', '-pill', '-circle', '-shaped'].map(suffix => `rounded${suffix}`),
   ],
   outputToCssLayers: {
-    cssLayerName: (layer) => layer === 'properties' ? null : `uno-${layer}`,
+    cssLayerName: layer => layer === 'properties' ? null : `uno-${layer}`,
   },
 })
