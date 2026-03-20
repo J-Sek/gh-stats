@@ -1,11 +1,10 @@
-/* eslint-disable max-len */
 // @unocss-include
 
 // Local Solar iconset aliases based on vuetifyjs/vuetify#22706
 // Once that PR is merged, replace this file with: import { aliases, solar } from 'vuetify/iconsets/solar'
 
-import { h } from 'vue'
 import type { IconAliases, IconSet } from 'vuetify'
+import { h } from 'vue'
 
 const aliases: IconAliases = {
   collapse: 'i-solar:alt-arrow-up-linear',
