@@ -4,15 +4,17 @@ import fs from 'node:fs'
 import path from 'node:path'
 
 const DATA_DIR = path.join('data', 'vuetify')
-const ISSUES_FILE = path.join(DATA_DIR, 'open-issues-count.json')
+const ISSUES_FILE = path.join(DATA_DIR, 'open-issues.json')
 const LOGS_FILE = path.join(DATA_DIR, 'logs.txt')
 const COOLDOWN_FILE = path.join(DATA_DIR, 'cooldown-state.json')
-const START_DATE = '2020-01-01'
-const COOLDOWN_MS = 30_000
+const START_DATE = '2016-12-14'
+const COOLDOWN_MS = 5000
 
 interface DayEntry {
   date: string
   count: number
+  added: number
+  closed: number
 }
 
 let running = false
@@ -62,32 +64,40 @@ function setCooldown () {
   fs.writeFileSync(COOLDOWN_FILE, JSON.stringify({ until: Date.now() + COOLDOWN_MS }))
 }
 
-function nextDate (entries: DayEntry[]): string {
-  if (entries.length === 0) {
-    return START_DATE
-  }
-  const last = entries.at(-1).date
-  const d = new Date(last + 'T00:00:00Z')
-  d.setUTCDate(d.getUTCDate() + 1)
+function addDays (iso: string, n: number): string {
+  const d = new Date(iso + 'T00:00:00Z')
+  d.setUTCDate(d.getUTCDate() + n)
   return d.toISOString().split('T')[0]
+}
+
+function nextDate (entries: DayEntry[]): string | null {
+  const today = new Date().toISOString().split('T')[0]
+  const dates = new Set(entries.map(e => e.date))
+  let cursor = today
+  while (cursor >= START_DATE) {
+    if (!dates.has(cursor)) {
+      return cursor
+    }
+    cursor = addDays(cursor, -1)
+  }
+  return null
 }
 
 function getProgress (entries: DayEntry[]): number {
   if (entries.length === 0) {
     return 0
   }
-  const last = entries.at(-1).date
-  const today = new Date().toISOString().split('T')[0]
-  if (last >= today) {
+  const first = entries[0].date
+  if (first <= START_DATE) {
     return 100
   }
   const start = new Date(START_DATE + 'T00:00:00Z').getTime()
+  const today = new Date().toISOString().split('T')[0]
   const end = new Date(today + 'T00:00:00Z').getTime()
-  const current = new Date(last + 'T00:00:00Z').getTime()
-  if (end === start) {
-    return 100
-  }
-  return Math.min(Math.round(((current - start) / (end - start)) * 100), 99)
+  const current = new Date(first + 'T00:00:00Z').getTime()
+  const total = end - start
+  if (total === 0) return 100
+  return Math.min(Math.round(((end - current) / total) * 100), 99)
 }
 
 function ghSearchCount (query: string): Promise<number> {
@@ -103,38 +113,44 @@ function ghSearchCount (query: string): Promise<number> {
   })
 }
 
-async function processNextDay () {
+async function processNext () {
   const entries = readEntries()
   const date = nextDate(entries)
-  const today = new Date().toISOString().split('T')[0]
 
-  if (date > today) {
-    appendLog('INFO', 'Caught up to today, nothing to fetch')
+  if (!date) {
+    appendLog('INFO', 'All days fetched')
     return
   }
 
   try {
-    let count: number
+    const added = await ghSearchCount(`repo:vuetifyjs/vuetify+is:issue+created:${date}`)
+    const closed = await ghSearchCount(`repo:vuetifyjs/vuetify+is:issue+closed:${date}`)
 
+    let count: number
     if (entries.length === 0) {
-      const created = await ghSearchCount(`repo:vuetifyjs/vuetify+is:issue+created:<=${date}`)
-      const closed = await ghSearchCount(`repo:vuetifyjs/vuetify+is:issue+closed:<=${date}`)
-      count = created - closed
-      appendLog('INFO', `Baseline ${date}: ${created} created - ${closed} closed = ${count} open`)
+      count = await ghSearchCount(`repo:vuetifyjs/vuetify+is:issue+is:open`)
+      entries.push({ date, count, added, closed })
+      appendLog('INFO', `Seed ${date}: ${count} open (+${added} -${closed})`)
     } else {
-      const prevCount = entries.at(-1).count
-      const opened = await ghSearchCount(`repo:vuetifyjs/vuetify+is:issue+created:${date}`)
-      const closed = await ghSearchCount(`repo:vuetifyjs/vuetify+is:issue+closed:${date}`)
-      count = prevCount + opened - closed
-      appendLog('INFO', `${date}: +${opened} -${closed} = ${count} open`)
+      // Find the next day after this one in existing data to derive count
+      const idx = entries.findIndex(e => e.date > date)
+      if (idx === -1) {
+        const prev = entries.at(-1)!
+        count = prev.count + added - closed
+        entries.push({ date, count, added, closed })
+      } else {
+        const next = entries[idx]
+        count = next.count - next.added + next.closed
+        entries.splice(idx, 0, { date, count, added, closed })
+      }
+      appendLog('INFO', `${date}: +${added} -${closed} = ${count} open`)
     }
 
-    entries.push({ date, count })
     writeEntries(entries)
   } catch (error: unknown) {
     const msg = error instanceof Error ? error.message : String(error)
     if (msg.includes('API rate limit exceeded')) {
-      appendLog('INFO', 'Cooldown 30s for rate limit')
+      appendLog('INFO', 'Cooldown 5s for rate limit')
       setCooldown()
     } else {
       appendLog('ERROR', `Failed to fetch ${date}: ${msg}`)
@@ -177,17 +193,16 @@ export function progressApi (): Plugin {
         }
 
         const entries = readEntries()
-        const date = nextDate(entries)
-        const today = new Date().toISOString().split('T')[0]
+        const progress = getProgress(entries)
 
-        if (date > today) {
+        if (progress >= 100) {
           json(res, { progress: 100 })
           return
         }
 
         running = true
         json(res, { started: true })
-        processNextDay().finally(() => {
+        processNext().finally(() => {
           running = false
         })
       })

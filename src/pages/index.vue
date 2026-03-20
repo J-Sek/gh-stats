@@ -1,6 +1,6 @@
 <template>
   <v-container class="d-flex flex-column align-center py-8">
-    <div class="text-body-small text-medium-emphasis mb-1">{{ eta }}</div>
+    <div class="text-body-large text-medium-emphasis mb-1">{{ eta }}</div>
 
     <v-progress-linear
       v-model="progress"
@@ -67,6 +67,8 @@ import { useDate } from 'vuetify'
 interface DayEntry {
   date: string
   count: number
+  added: number
+  closed: number
 }
 
 const date = useDate()
@@ -77,27 +79,26 @@ const snackbars = ref<any[]>([])
 const useGlobalMax = ref(false)
 const seenLogs = new Set<string>()
 
-const START_DATE = '2020-01-01'
+const START_DATE = '2016-12-14'
 const SECS_PER_DAY = 4 // 30 queries/min, 2 per day = 15 days/min
+
+function formatEta (secs: number) {
+  const h = Math.floor(secs / 3600)
+  const m = Math.floor((secs % 3600) / 60)
+  const s = Math.floor(secs % 60)
+  return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`
+}
 
 const eta = computed(() => {
   const entries = openIssues.value
+  const today = new Date().toISOString().split('T')[0]
+  const totalDays = Math.ceil((new Date(today).getTime() - new Date(START_DATE).getTime()) / 86_400_000)
   if (entries.length === 0) {
-    const totalDays = Math.ceil((Date.now() - new Date(START_DATE).getTime()) / 86_400_000)
-    const remaining = totalDays * SECS_PER_DAY
-    const h = Math.floor(remaining / 3600)
-    const m = Math.floor((remaining % 3600) / 60)
-    const s = Math.floor(remaining % 60)
-    return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`
+    return formatEta(totalDays * SECS_PER_DAY)
   }
-  const lastDate = entries.at(-1)!.date
-  const daysLeft = Math.ceil((Date.now() - new Date(lastDate).getTime()) / 86_400_000)
-  if (daysLeft <= 0) return '00:00:00'
-  const remaining = daysLeft * SECS_PER_DAY
-  const h = Math.floor(remaining / 3600)
-  const m = Math.floor((remaining % 3600) / 60)
-  const s = Math.floor(remaining % 60)
-  return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`
+  const daysRemaining = totalDays - entries.length
+  if (daysRemaining <= 0) return '00:00:00'
+  return formatEta(daysRemaining * SECS_PER_DAY)
 })
 
 let checkTimer: number | undefined
