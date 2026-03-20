@@ -1,45 +1,198 @@
 <template>
-  <v-container class="fill-height d-flex justify-center align-center">
+  <v-container class="d-flex flex-column align-center py-8">
+    <div class="text-body-small text-medium-emphasis mb-1">{{ eta }}</div>
+
     <v-progress-linear
       v-model="progress"
+      class="mb-8"
       color="primary"
       style="width: 400px"
     />
+
+    <v-footer app height="48">
+      <span class="text-medium-emphasis mr-2">Y-axis scale</span>
+
+      <v-btn-toggle
+        v-model="useGlobalMax"
+        density="compact"
+        mandatory
+        variant="outlined"
+      >
+        <v-btn :value="true">Global</v-btn>
+        <v-btn :value="false">Local</v-btn>
+      </v-btn-toggle>
+    </v-footer>
+
+    <div v-for="year in years" :key="year.label" class="mb-4">
+      <div class="text-display-large mb-1">{{ year.label }}</div>
+
+      <div class="d-flex align-stretch">
+        <v-sheet
+          :height="200"
+          :width="366 * 3"
+        >
+          <v-sparkline
+            auto-line-width
+            color="primary"
+            height="200"
+            line-width="2"
+            :max="useGlobalMax ? globalMax : year.max"
+            :min="0"
+            :model-value="year.counts"
+            :style="{ width: `${year.counts.length * 3}px` }"
+            type="bar"
+            :width="year.counts.length * 3"
+          />
+        </v-sheet>
+
+        <div
+          class="d-flex flex-column justify-space-between ml-2 my-n2 text-label-small text-medium-emphasis"
+          style="width: 40px"
+        >
+          <small>{{ useGlobalMax ? globalMax : year.max }}</small>
+          <small v-for="tick in (useGlobalMax ? globalTicks : year.ticks)" :key="tick">{{ tick % 300 === 0 ? tick : '-' }}</small>
+          <small>0</small>
+        </div>
+      </div>
+    </div>
+
+    <v-snackbar-queue v-model="snackbars" location="bottom end" total-visible="5" variant="tonal" />
   </v-container>
 </template>
 
 <script setup lang="ts">
-  import { onMounted, onUnmounted, ref } from 'vue'
+import { computed, onMounted, onUnmounted, ref } from 'vue'
+import { useDate } from 'vuetify'
 
-  const progress = ref(0)
-  let checkTimer: number | undefined
-  let runTimer: number | undefined
+interface DayEntry {
+  date: string
+  count: number
+}
 
-  async function loadCheck () {
-    const res = await fetch('/check')
-    const data = await res.json()
-    progress.value = data.v
-    if (data.v >= 100) stopPolling()
+const date = useDate()
+
+const progress = ref(0)
+const openIssues = ref<DayEntry[]>([])
+const snackbars = ref<any[]>([])
+const useGlobalMax = ref(false)
+const seenLogs = new Set<string>()
+
+const START_DATE = '2020-01-01'
+const SECS_PER_DAY = 4 // 30 queries/min, 2 per day = 15 days/min
+
+const eta = computed(() => {
+  const entries = openIssues.value
+  if (entries.length === 0) {
+    const totalDays = Math.ceil((Date.now() - new Date(START_DATE).getTime()) / 86_400_000)
+    const remaining = totalDays * SECS_PER_DAY
+    const h = Math.floor(remaining / 3600)
+    const m = Math.floor((remaining % 3600) / 60)
+    const s = Math.floor(remaining % 60)
+    return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`
   }
+  const lastDate = entries.at(-1)!.date
+  const daysLeft = Math.ceil((Date.now() - new Date(lastDate).getTime()) / 86_400_000)
+  if (daysLeft <= 0) return '00:00:00'
+  const remaining = daysLeft * SECS_PER_DAY
+  const h = Math.floor(remaining / 3600)
+  const m = Math.floor((remaining % 3600) / 60)
+  const s = Math.floor(remaining % 60)
+  return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`
+})
 
-  function startPolling () {
-    checkTimer = window.setInterval(loadCheck, 1000)
+let checkTimer: number | undefined
+let runTimer: number | undefined
+let logsTimer: number | undefined
 
-    runTimer = window.setInterval(async () => {
-      if (progress.value >= 100) return
-      await fetch('/run', { method: 'POST' })
-    }, 2000)
+const globalMax = computed(() => {
+  if (openIssues.value.length === 0) return 100
+  return Math.ceil(Math.max(...openIssues.value.map(e => e.count)) / 100) * 100
+})
+
+const globalTicks = computed(() => {
+  const ticks: number[] = []
+  for (let v = globalMax.value - 100; v > 0; v -= 100) {
+    ticks.push(v)
   }
+  return ticks
+})
 
-  function stopPolling () {
-    clearInterval(checkTimer)
-    clearInterval(runTimer)
+const years = computed(() => {
+  const grouped = new Map<number, number[]>()
+  for (const entry of openIssues.value) {
+    const year = Number.parseInt(entry.date.slice(0, 4))
+    if (!grouped.has(year)) grouped.set(year, [])
+    grouped.get(year)!.push(entry.count)
   }
+  return Array.from(grouped.entries())
+    .toSorted(([a]: [number, number[]], [b]: [number, number[]]) => a - b)
+    .map(([y, counts]: [number, number[]]) => {
+      const max = Math.ceil(Math.max(...counts) / 100) * 100 || 100
+      const ticks: number[] = []
+      for (let v = max - 100; v > 0; v -= 100) {
+        ticks.push(v)
+      }
+      return { label: String(y), counts, max, ticks }
+    })
+})
 
-  onMounted(() => {
-    loadCheck()
-    startPolling()
-  })
+const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
 
-  onUnmounted(stopPolling)
+function formatDay (iso: string) {
+  const d = new Date(iso + 'T00:00:00')
+  return `${d.getDate()} ${MONTHS[d.getMonth()]} '${String(d.getFullYear()).slice(2)}`
+}
+
+async function loadCheck () {
+  const res = await fetch('/check')
+  const data = await res.json()
+  progress.value = data.progress
+  openIssues.value = data.openIssues
+  if (data.progress >= 100) stopPolling()
+}
+
+async function loadLogs () {
+  const res = await fetch('/logs')
+  const data = await res.json()
+  for (const line of data.lines as string[]) {
+    if (seenLogs.has(line)) continue
+    seenLogs.add(line)
+    const match = line.match(/^(.+?) \[(INFO|ERROR)] (.+)$/)
+    if (match) {
+      const msg = match[3]!
+      const dayMatch = msg.match(/^(\d{4}-\d{2}-\d{2}): \+(\d+) -(\d+)/)
+      const text = dayMatch
+        ? `${formatDay(dayMatch[1]!)}: ${dayMatch[2]} issues added, ${dayMatch[3]} issues removed`
+        : msg
+      snackbars.value.push({
+        title: date.format(new Date(match[1]!), 'keyboardDateTime'),
+        text,
+        color: match[2] === 'ERROR' ? 'error' : 'info',
+      })
+    }
+  }
+}
+
+function startPolling () {
+  checkTimer = window.setInterval(loadCheck, 1000)
+  logsTimer = window.setInterval(loadLogs, 1000)
+  runTimer = window.setInterval(async () => {
+    if (progress.value >= 100) return
+    await fetch('/run', { method: 'POST' })
+  }, 2000)
+}
+
+function stopPolling () {
+  clearInterval(checkTimer)
+  clearInterval(runTimer)
+  clearInterval(logsTimer)
+}
+
+onMounted(() => {
+  loadCheck()
+  loadLogs()
+  startPolling()
+})
+
+onUnmounted(stopPolling)
 </script>
