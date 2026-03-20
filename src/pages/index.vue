@@ -49,7 +49,29 @@
     </v-footer>
 
     <div v-for="year in years" :key="year.label" class="mb-4">
-      <div class="text-display-large mb-1">{{ year.label }}</div>
+      <div class="d-flex align-center mb-1">
+        <div class="text-display-large">{{ year.label }}</div>
+
+        <v-chip
+          class="ml-3"
+          color="primary"
+          density="comfortable"
+          prepend-icon="i-solar:square-arrow-right-up-linear"
+          variant="tonal"
+        >
+          {{ year.added }} added
+        </v-chip>
+
+        <v-chip
+          class="ml-1"
+          color="success"
+          density="comfortable"
+          prepend-icon="i-solar:square-arrow-right-down-linear"
+          variant="tonal"
+        >
+          {{ year.closed }} closed
+        </v-chip>
+      </div>
 
       <div class="d-flex align-stretch">
         <v-sheet
@@ -181,21 +203,26 @@
   const currentYear = adapter.getYear(adapter.date()!)
 
   const years = computed(() => {
-    const grouped = new Map<number, number[]>()
+    const grouped = new Map<number, { counts: number[], added: number, closed: number }>()
     for (const entry of aggregatedEntries.value) {
       const year = adapter.getYear(adapter.date(entry.date)!)
-      if (!grouped.has(year)) grouped.set(year, [])
-      grouped.get(year)!.push(entry[metric.value])
+      if (!grouped.has(year)) grouped.set(year, { counts: [], added: 0, closed: 0 })
+      const g = grouped.get(year)!
+      g.counts.push(entry[metric.value])
+      g.added += entry.added
+      g.closed += entry.closed
     }
     const base = metricBase.value
     return Array.from(grouped.entries())
-      .toSorted(([a]: [number, number[]], [b]: [number, number[]]) => a - b)
-      .map(([y, counts]: [number, number[]]) => {
+      .toSorted(([a], [b]) => a - b)
+      .map(([y, { counts, added, closed }]) => {
         const max = Math.ceil(Math.max(...counts) / base) * base || base
         return {
           isCurrent: y === currentYear,
           label: String(y),
           counts,
+          added,
+          closed,
           max,
           ticks: makeTicks(max),
         }
@@ -229,9 +256,9 @@
           ? `${formatDay(dayMatch[1]!)}: ${dayMatch[2]} issues added, ${dayMatch[3]} issues removed`
           : msg
         snackbars.value.push({
-          title: adapter.format(adapter.date(match[1]!)!, 'keyboardDateTime'),
+          title: new Intl.DateTimeFormat(undefined, { hour: '2-digit', minute: '2-digit', second: '2-digit' }).format(new Date(match[1]!)),
           text,
-          color: match[2] === 'ERROR' ? 'error' : 'info',
+          color: match[2] === 'ERROR' ? 'error' : /cooldown/i.test(msg) ? 'warning' : 'info',
         })
       }
     }
