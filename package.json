@@ -16,6 +16,7 @@
   },
   "dependencies": {
     "@fontsource/kanit": "^5.2.8",
+    "octokit": "^5.0.5",
     "pinia": "^3.0.4",
     "vue": "^3.5.26",
     "vue-i18n": "^11.3.0",

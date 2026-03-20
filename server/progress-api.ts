@@ -1,23 +1,35 @@
+import type * as http from 'node:http'
 import type { Plugin } from 'vite'
-import { exec } from 'node:child_process'
+import { execSync } from 'node:child_process'
 import fs from 'node:fs'
 import path from 'node:path'
+import { Octokit } from 'octokit'
 
 const DATA_DIR = path.join('data', 'vuetify')
 const ISSUES_FILE = path.join(DATA_DIR, 'open-issues.json')
 const LOGS_FILE = path.join(DATA_DIR, 'logs.txt')
-const COOLDOWN_FILE = path.join(DATA_DIR, 'cooldown-state.json')
 const START_DATE = '2016-12-14'
-const COOLDOWN_MS = 5000
 
 interface DayEntry {
   date: string
   count: number
   added: number
   closed: number
+  closedCompleted?: number
+  closedNotPlanned?: number
 }
 
 let running = false
+let rateLimitReset = 0
+
+function getToken (): string {
+  if (process.env.GH_TOKEN) {
+    return process.env.GH_TOKEN
+  }
+  return execSync('gh auth token', { encoding: 'utf8' }).trim()
+}
+
+const octokit = new Octokit({ auth: getToken() })
 
 function ensureDataDir () {
   fs.mkdirSync(DATA_DIR, { recursive: true })
@@ -53,15 +65,8 @@ function readLastLogs (n: number): string[] {
   return content.split('\n').slice(-n)
 }
 
-function isCoolingDown (): boolean {
-  if (!fs.existsSync(COOLDOWN_FILE)) return false
-  const { until } = JSON.parse(fs.readFileSync(COOLDOWN_FILE, 'utf8'))
-  return Date.now() < until
-}
-
-function setCooldown () {
-  ensureDataDir()
-  fs.writeFileSync(COOLDOWN_FILE, JSON.stringify({ until: Date.now() + COOLDOWN_MS }))
+function isRateLimited (): boolean {
+  return Date.now() < rateLimitReset
 }
 
 function addDays (iso: string, n: number): string {
@@ -96,25 +101,91 @@ function getProgress (entries: DayEntry[]): number {
   const end = new Date(today + 'T00:00:00Z').getTime()
   const current = new Date(first + 'T00:00:00Z').getTime()
   const total = end - start
-  if (total === 0) return 100
+  if (total === 0) {
+    return 100
+  }
   return Math.min(Math.round(((end - current) / total) * 100), 99)
 }
 
-function ghSearchCount (query: string): Promise<number> {
-  const cmd = `gh api "search/issues?q=${query}&per_page=1" --jq '.total_count'`
-  return new Promise((resolve, reject) => {
-    exec(cmd, (error, stdout, stderr) => {
-      if (error) {
-        reject(new Error(stderr || error.message))
-      } else {
-        resolve(Number.parseInt(stdout.trim(), 10))
-      }
-    })
+function checkRateLimit (headers: Record<string, string | undefined>) {
+  const remaining = Number(headers['x-ratelimit-remaining'] ?? 1)
+  if (remaining === 0) {
+    rateLimitReset = Number(headers['x-ratelimit-reset'] ?? 0) * 1000
+  }
+}
+
+async function searchCount (query: string): Promise<number> {
+  const res = await octokit.rest.search.issuesAndPullRequests({
+    q: query,
+    per_page: 1,
   })
+  checkRateLimit(res.headers as Record<string, string | undefined>)
+  return res.data.total_count
+}
+
+async function searchClosedByReason (date: string): Promise<{ closed: number, closedCompleted: number, closedNotPlanned: number }> {
+  const res = await octokit.rest.search.issuesAndPullRequests({
+    q: `repo:vuetifyjs/vuetify is:issue closed:${date}`,
+    per_page: 100,
+  })
+  checkRateLimit(res.headers as Record<string, string | undefined>)
+  let closedCompleted = 0
+  let closedNotPlanned = 0
+  for (const item of res.data.items) {
+    if (item.state_reason === 'completed') {
+      closedCompleted++
+    } else if (item.state_reason === 'not_planned') {
+      closedNotPlanned++
+    }
+  }
+  return { closed: res.data.total_count, closedCompleted, closedNotPlanned }
+}
+
+function nextBackfillEntry (entries: DayEntry[]): DayEntry | null {
+  for (let i = entries.length - 1; i >= 0; i--) {
+    if (entries[i].closedCompleted == null) {
+      return entries[i]
+    }
+  }
+  return null
+}
+
+function handleError (error: unknown, context: string) {
+  const msg = error instanceof Error ? error.message : String(error)
+  if (msg.includes('rate limit') || msg.includes('secondary rate limit')) {
+    const secs = Math.ceil((rateLimitReset - Date.now()) / 1000)
+    appendLog('INFO', `Cooldown ${secs}s for rate limit`)
+  } else {
+    appendLog('ERROR', `${context}: ${msg}`)
+  }
+}
+
+async function processBackfill (entries: DayEntry[]) {
+  const entry = nextBackfillEntry(entries)
+
+  if (!entry) {
+    appendLog('INFO', 'Close-reason backfill complete')
+    return
+  }
+
+  try {
+    const { closedCompleted, closedNotPlanned } = await searchClosedByReason(entry.date)
+    entry.closedCompleted = closedCompleted
+    entry.closedNotPlanned = closedNotPlanned
+    appendLog('INFO', `${entry.date}: (backfill) ${closedCompleted} completed, ${closedNotPlanned} not planned`)
+    writeEntries(entries)
+  } catch (error: unknown) {
+    handleError(error, `Backfill failed ${entry.date}`)
+  }
 }
 
 async function processNext () {
   const entries = readEntries()
+
+  if (nextBackfillEntry(entries)) {
+    return processBackfill(entries)
+  }
+
   const date = nextDate(entries)
 
   if (!date) {
@@ -123,42 +194,35 @@ async function processNext () {
   }
 
   try {
-    const added = await ghSearchCount(`repo:vuetifyjs/vuetify+is:issue+created:${date}`)
-    const closed = await ghSearchCount(`repo:vuetifyjs/vuetify+is:issue+closed:${date}`)
+    const added = await searchCount(`repo:vuetifyjs/vuetify is:issue created:${date}`)
+    const { closed, closedCompleted, closedNotPlanned } = await searchClosedByReason(date)
 
     let count: number
     if (entries.length === 0) {
-      count = await ghSearchCount(`repo:vuetifyjs/vuetify+is:issue+is:open`)
-      entries.push({ date, count, added, closed })
+      count = await searchCount('repo:vuetifyjs/vuetify is:issue is:open')
+      entries.push({ date, count, added, closed, closedCompleted, closedNotPlanned })
       appendLog('INFO', `Seed ${date}: ${count} open (+${added} -${closed})`)
     } else {
-      // Find the next day after this one in existing data to derive count
       const idx = entries.findIndex(e => e.date > date)
       if (idx === -1) {
         const prev = entries.at(-1)!
         count = prev.count + added - closed
-        entries.push({ date, count, added, closed })
+        entries.push({ date, count, added, closed, closedCompleted, closedNotPlanned })
       } else {
         const next = entries[idx]
         count = next.count - next.added + next.closed
-        entries.splice(idx, 0, { date, count, added, closed })
+        entries.splice(idx, 0, { date, count, added, closed, closedCompleted, closedNotPlanned })
       }
       appendLog('INFO', `${date}: +${added} -${closed} = ${count} open`)
     }
 
     writeEntries(entries)
   } catch (error: unknown) {
-    const msg = error instanceof Error ? error.message : String(error)
-    if (msg.includes('API rate limit exceeded')) {
-      appendLog('INFO', 'Cooldown 5s for rate limit')
-      setCooldown()
-    } else {
-      appendLog('ERROR', `Failed to fetch ${date}: ${msg}`)
-    }
+    handleError(error, `Failed to fetch ${date}`)
   }
 }
 
-function json (res: import('node:http').ServerResponse, data: unknown) {
+function json (res: http.ServerResponse, data: unknown) {
   res.setHeader('Content-Type', 'application/json')
   res.end(JSON.stringify(data))
 }
@@ -186,7 +250,7 @@ export function progressApi (): Plugin {
           json(res, { error: 'Already running' })
           return
         }
-        if (isCoolingDown()) {
+        if (isRateLimited()) {
           res.statusCode = 429
           json(res, { error: 'Cooling down' })
           return
